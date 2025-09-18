@@ -48,6 +48,21 @@ class Farmer(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
 
+# Commodity Price model
+class CommodityPrice(Base):
+    __tablename__ = "commodity_prices"
+    id = Column(String, primary_key=True, index=True)
+    state = Column(String, nullable=False)
+    district = Column(String, nullable=False)
+    market = Column(String, nullable=False)
+    commodity = Column(String, nullable=False)
+    variety = Column(String, nullable=True)
+    grade = Column(String, nullable=True)
+    arrival_date = Column(String, nullable=False)
+    min_price = Column(Float, nullable=False)
+    max_price = Column(Float, nullable=False)
+    modal_price = Column(Float, nullable=False)
+
 # Create all tables
 Base.metadata.create_all(bind=engine)
 
@@ -800,3 +815,78 @@ async def chat_with_farmer(message: ChatMessage):
     except Exception as e:
         print(f"Chat error: {str(e)}")  # Add logging
         raise HTTPException(status_code=500, detail=str(e))
+
+import pandas as pd
+from models.commodity import CommodityPrice, Base
+
+# Add after database setup
+def load_commodity_data():
+    try:
+        df = pd.read_csv('backend/commodity_price.csv')
+        df['Arrival_Date'] = pd.to_datetime(df['Arrival_Date'], format='%d/%m/%Y')
+        
+        # Create tables
+        Base.metadata.create_all(bind=engine)
+        
+        # Convert DataFrame to database records
+        db = SessionLocal()
+        for _, row in df.iterrows():
+            price = CommodityPrice(
+                id=f"{row['State']}_{row['District']}_{row['Commodity']}_{row['Arrival_Date']}",
+                state=row['State'],
+                district=row['District'],
+                market=row['Market'],
+                commodity=row['Commodity'],
+                variety=row['Variety'],
+                grade=row['Grade'],
+                arrival_date=row['Arrival_Date'],
+                min_price=row['Min_x0020_Price'],
+                max_price=row['Max_x0020_Price'],
+                modal_price=row['Modal_x0020_Price']
+            )
+            db.add(price)
+        db.commit()
+        db.close()
+    except Exception as e:
+        print(f"Error loading commodity data: {e}")
+
+# Add new endpoint
+@app.get("/commodity_prices/")
+async def get_commodity_prices(
+    state: str = None,
+    commodity: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(CommodityPrice)
+    
+    if state:
+        query = query.filter(CommodityPrice.state == state)
+    if commodity:
+        query = query.filter(CommodityPrice.commodity == commodity)
+    if start_date:
+        query = query.filter(CommodityPrice.arrival_date >= start_date)
+    if end_date:
+        query = query.filter(CommodityPrice.arrival_date <= end_date)
+        
+    prices = query.all()
+    return {
+        "prices": [
+            {
+                "state": p.state,
+                "district": p.district,
+                "market": p.market,
+                "commodity": p.commodity,
+                "variety": p.variety,
+                "arrival_date": p.arrival_date.strftime("%Y-%m-%d"),
+                "min_price": p.min_price,
+                "max_price": p.max_price,
+                "modal_price": p.modal_price
+            }
+            for p in prices
+        ]
+    }
+
+# Call this after app initialization
+load_commodity_data()
