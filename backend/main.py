@@ -63,6 +63,20 @@ class CommodityPrice(Base):
     max_price = Column(Float, nullable=False)
     modal_price = Column(Float, nullable=False)
 
+# Marketplace model
+class MarketListing(Base):
+    __tablename__ = "market_listings"
+    id = Column(String, primary_key=True, index=True)
+    seller_name = Column(String, nullable=False)
+    crop_name = Column(String, nullable=False)
+    quantity = Column(Float, nullable=False)
+    price_per_kg = Column(Float, nullable=False)
+    location = Column(String, nullable=False)
+    state = Column(String, nullable=False)
+    created_at = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="available")
+    contact_number = Column(String, nullable=False)  # Added this field
+
 # Create all tables
 Base.metadata.create_all(bind=engine)
 
@@ -210,7 +224,25 @@ def login(user: UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == user.username).first()
     if not db_user or not bcrypt.checkpw(user.password.encode("utf-8"), db_user.password.encode("utf-8")):
         raise HTTPException(status_code=400, detail="Invalid credentials")
-    return {"message": "Login successful", "token": "dummy_token"}
+    
+    # Get or create farmer record
+    farmer = db.query(Farmer).filter(Farmer.name == user.username).first()
+    if not farmer:
+        farmer = Farmer(
+            id=str(uuid.uuid4()),
+            name=user.username,
+            state="Unknown",  # Will be updated when farm details are submitted
+            latitude=0,
+            longitude=0
+        )
+        db.add(farmer)
+        db.commit()
+    
+    return {
+        "message": "Login successful", 
+        "token": "dummy_token",
+        "farmer_id": farmer.id
+    }
 
 # Save farmer data route
 @app.post("/submit_farm_data/")
@@ -890,3 +922,121 @@ async def get_commodity_prices(
 
 # Call this after app initialization
 load_commodity_data()
+
+# Add these imports at the top
+from models.marketplace import MarketListing, Base as MarketplaceBase
+import uuid
+from datetime import datetime
+from typing import Optional
+
+# Add these Pydantic models after other models
+class MarketListingCreate(BaseModel):
+    seller_name: str  # Changed from farmer_id
+    crop_name: str
+    quantity: float
+    price_per_kg: float
+    location: str
+    state: str
+    contact_number: str
+    
+    @validator('contact_number')
+    def validate_phone(cls, v):
+        if not v.strip():
+            raise ValueError('Contact number is required')
+        return v.strip()
+
+class MarketListingResponse(BaseModel):
+    id: str
+    seller_name: str  # Changed from farmer fields
+    crop_name: str
+    quantity: float
+    price_per_kg: float
+    location: str
+    state: str
+    contact_number: str
+    created_at: datetime
+    status: str
+
+# Add after database setup code
+MarketplaceBase.metadata.create_all(bind=engine)
+
+# Add these new routes
+@app.post("/marketplace/list/", response_model=MarketListingResponse)
+async def create_listing(
+    listing: MarketListingCreate,
+    db: Session = Depends(get_db)
+):
+    try:
+        new_listing = MarketListing(
+            id=str(uuid.uuid4()),
+            seller_name=listing.seller_name,
+            crop_name=listing.crop_name,
+            quantity=listing.quantity,
+            price_per_kg=listing.price_per_kg,
+            location=listing.location,
+            state=listing.state,
+            contact_number=listing.contact_number,
+            created_at=datetime.utcnow(),
+            status="available"
+        )
+        
+        db.add(new_listing)
+        db.commit()
+        db.refresh(new_listing)
+        
+        return {
+            "id": new_listing.id,
+            "seller_name": new_listing.seller_name,
+            "crop_name": new_listing.crop_name,
+            "quantity": new_listing.quantity,
+            "price_per_kg": new_listing.price_per_kg,
+            "location": new_listing.location,
+            "state": new_listing.state,
+            "contact_number": new_listing.contact_number,
+            "created_at": new_listing.created_at,
+            "status": new_listing.status
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/marketplace/listings/")
+async def get_listings(
+    state: Optional[str] = None,
+    location: Optional[str] = None,
+    crop: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        query = db.query(MarketListing)
+        
+        if state:
+            query = query.filter(MarketListing.state.ilike(f"%{state}%"))
+        if location:
+            query = query.filter(MarketListing.location.ilike(f"%{location}%"))
+        if crop:
+            query = query.filter(MarketListing.crop_name.ilike(f"%{crop}%"))
+            
+        query = query.filter(MarketListing.status == "available")
+        query = query.order_by(MarketListing.created_at.desc())
+        
+        listings = query.all()
+        
+        return {
+            "listings": [
+                {
+                    "id": listing.id,
+                    "seller_name": listing.seller_name,
+                    "crop_name": listing.crop_name,
+                    "quantity": listing.quantity,
+                    "price_per_kg": listing.price_per_kg,
+                    "location": listing.location,
+                    "state": listing.state,
+                    "contact_number": listing.contact_number,
+                    "created_at": listing.created_at,
+                    "status": listing.status
+                }
+                for listing in listings
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
